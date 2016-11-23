@@ -1,1 +1,0 @@
-# yuanxinos_usb
