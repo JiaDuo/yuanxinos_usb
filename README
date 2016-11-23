@@ -1,0 +1,42 @@
+syber_usb - 0.1
+Yuan Xin mobile phone  tool
+by Duo Jia, jiaduo@syberos.com
+Test on x86_64(Ubuntu14.04 & 15.04)
+
+Remember:
+Run as root!
+Do not run in the virtual box linux (virtual machine), will lose data!
+
+Note:
+sometimes phone down!!!,press volum down & power,a moment,press volum up,waiting.
+
+upload speed:
+2MBytes/s(self-test),Depending on the CPU speed and program.
+
+Install:
+install libusb-1.0-0 libusb-1.0-0-dev
+make
+sudo ./syber_usb [option]
+
+Usage:
+sudo ./syber_usb [ready|reset|read] [partition name] [size] [file]
+  ready|reset|read     - Connect device(ready)
+                         Reset device(reset)
+                         Read partition(read)
+  partition name       - The name of the partition to read (only read)
+  size                 - The size of the partition to read (only read)
+                         Support 'm/M' 'k/K'
+  file                 - The name of the file to store (only read)
+
+Example:
+sudo ./syber_usb 
+        upload "internalsd" 200m(part)
+        upload "data" 200m(part)
+        upload "boot" 16m(full)
+sudo ./syber_usb ready
+sudo ./syber_usb read internalsd 200m internalsd200m.bin
+sudo ./syber_usb read boot 4096k boot4m.bin
+sudo ./syber_usb read boot 4096 boot4096bytes.bin
+sudo ./syber_usb reset
+
+		
