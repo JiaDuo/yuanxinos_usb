@@ -1,4 +1,4 @@
-syber_usb - 0.1
+syber_usb - 0.2
 Yuan Xin mobile phone  tool
 by Duo Jia, jiaduo@syberos.com
 Test on x86_64(Ubuntu14.04 & 15.04)
@@ -9,9 +9,14 @@ Do not run in the virtual box linux (virtual machine), will lose data!
 
 Note:
 sometimes phone down!!!,press volum down & power,a moment,press volum up,waiting.
+or
+sudo ./syber_usb reset
+or 
+sudo ./syber_usb shutdown
 
-upload speed:
-2MBytes/s(self-test),Depending on the CPU speed and program.
+Upload Speed:
+read partition:2MBytes/s(self-test),Depending on the CPU speed and program.
+read image files:0.5MBytes/s.(because  _MAX_SS must be 512 bytes)
 
 Install:
 install libusb-1.0-0 libusb-1.0-0-dev
@@ -19,10 +24,13 @@ make
 sudo ./syber_usb [option]
 
 Usage:
-sudo ./syber_usb [ready|reset|read] [partition name] [size] [file]
-  ready|reset|read     - Connect device(ready)
+sudo ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]
+  ready|reset|read|shutdown|camera
+                       - Connect device(ready)
                          Reset device(reset)
                          Read partition(read)
+                         shutdown device(shutdown)
+                         read image file to directory "syberos_camera"(camera)
   partition name       - The name of the partition to read (only read)
   size                 - The size of the partition to read (only read)
                          Support 'm/M' 'k/K'
@@ -30,6 +38,7 @@ sudo ./syber_usb [ready|reset|read] [partition name] [size] [file]
 
 Example:
 sudo ./syber_usb 
+	read camera to "syberos_camera"(full)
         upload "internalsd" 200m(part)
         upload "data" 200m(part)
         upload "boot" 16m(full)
@@ -38,5 +47,19 @@ sudo ./syber_usb read internalsd 200m internalsd200m.bin
 sudo ./syber_usb read boot 4096k boot4m.bin
 sudo ./syber_usb read boot 4096 boot4096bytes.bin
 sudo ./syber_usb reset
+sudo ./syber_usb shutdown
 
-		
+	
+History:
+V0.2	-2016-11-29
+	add read image file using 'fatfs'.
+	fix some bugs.
+	add 'shutdown' function.
+	add 'camera' function.
+	add 'make install' function.
+
+V0.1	-2016-11-25
+	add basic function.
+	add usb dirver.
+	add read flash.
+	

@@ -1,0 +1,356 @@
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <stdlib.h>
+
+#include <libusb.h>
+
+#include "main.h"
+#include "crc16.h"
+#include "protocol.h"
+
+
+/* usb bulk transfer buffer */
+uint8_t data_buffer[DATA_BUFFER_SIZE];
+
+/* libusb variable */
+libusb_device **devs;
+libusb_device *sprd_dev = NULL;
+libusb_device_handle *sprd_handle;	
+
+int is_sprd_dev(libusb_device *dev)
+{
+	struct libusb_device_descriptor desc;
+
+	int r = libusb_get_device_descriptor(dev,&desc);
+	if( r == 0){
+		if(desc.idProduct == SPRD_PID && desc.idVendor == SPRD_VID){
+			printf("Found sprd usb\n");
+			printf("PID = 0x%X , VID = 0x%X\n",desc.idProduct,desc.idVendor);
+			return 0;
+		}
+		else return 1;
+	}
+	else{
+		return r;
+	}
+}
+
+void print_hex(uint8_t* str,int length)
+{
+	int i;
+        for(i = 0; i < length; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",str[i]);
+        }
+	if(i && (i%9))
+	        putchar('\n');
+}
+
+void debug_print_hex(uint8_t* str,int length)
+{
+        int i;
+#ifdef SPRD_DEBUG
+	printf("debug:");
+        for(i = 0; i < length; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",str[i]);
+        }
+	if(i && (i%9))
+	        putchar('\n');
+#endif
+}
+
+
+void print_device_descriptor(struct libusb_device_descriptor *desc_p)
+{
+	int i;
+        for(i = 0; i < desc_p->bLength; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",((uint8_t *)desc_p)[i]);
+        }
+}
+
+void print_config_descriptor(struct libusb_config_descriptor *desc_p)
+{
+	int i;
+        for(i = 0; i < desc_p->bLength; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",((uint8_t *)desc_p)[i]);
+        }
+}
+
+void print_interface_descriptor(struct libusb_interface_descriptor *desc_p)
+{
+	int i;
+        for(i = 0; i < desc_p->bLength; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",((uint8_t *)desc_p)[i]);
+        }
+}
+
+void printf_endpoint_descriptor(struct libusb_endpoint_descriptor *desc_p)
+{
+        int i;
+        for(i = 0; i < desc_p->bLength; i++){
+                if(!(i%8)) putchar('\n');
+                printf("0x%02x ",((uint8_t *)desc_p)[i]);
+        }
+}
+
+/* printf the device descriptor & active config descriptor */
+int print_descriptor(libusb_device *sprd_dev)
+{
+	struct libusb_device_descriptor device_desc;
+	struct libusb_config_descriptor *config_desc;
+	struct libusb_interface_descriptor *interface_desc;
+	struct libusb_endpoint_descriptor *endpoint_desc;
+	int i,j;
+	int r;
+
+	r = libusb_get_device_descriptor(sprd_dev,&device_desc);
+	if(r != 0)
+		return r;
+	r = libusb_get_active_config_descriptor(sprd_dev,&config_desc);
+	//r = libusb_get_config_descriptor(sprd_dev,0,&config_desc);
+	if(r != 0)
+		return r;
+
+	/* device descritpors */
+	printf("Device descriptor:");
+	print_device_descriptor(&device_desc);
+	putchar('\n');
+
+	/* config descriptors */
+	printf("Active config descriptor:");
+	print_config_descriptor(config_desc);	
+	putchar('\n');	
+
+	/* interface & endpoint descriptors */
+	printf("Interface number:0x%02x\n",config_desc->bNumInterfaces);	
+	for(i = 0; i < config_desc->bNumInterfaces; i++){
+		printf("Interface descriptor:");
+		interface_desc = \
+			(struct libusb_interface_descriptor*)config_desc->interface[i].altsetting;
+		print_interface_descriptor(interface_desc);
+		putchar('\n');		
+
+		printf("Endpoint descriptor(num=%02x):",interface_desc->bNumEndpoints);
+		endpoint_desc = \
+			(struct libusb_endpoint_descriptor*)interface_desc->endpoint;
+		for(j = 0; j < interface_desc->bNumEndpoints ;j++){
+			printf_endpoint_descriptor(&endpoint_desc[j]);
+		}
+		
+		putchar('\n');
+	}
+	
+	/* free the config struct!!! */
+	libusb_free_config_descriptor(config_desc);
+
+	return 0;
+}
+
+/* return 0 - normal  no 0 - error */
+int sprd_usb_transfer(uint8_t* data,int size)
+{
+	int r;int cnt;
+	r = libusb_bulk_transfer(sprd_handle,SPRD_ENDP_OUT,data,size,&cnt,100);
+	return r;
+}
+
+int sprd_usb_receive(uint8_t* data,int *size)
+{
+	int r;
+	r = libusb_bulk_transfer(sprd_handle,SPRD_ENDP_IN,data,DATA_BUFFER_SIZE,size,100);
+	return r;
+}
+
+int sprd_verify_frame(uint8_t* frame,int frame_size)
+{
+	if(frame[0] != SPRD_START_BYTE || frame[frame_size-1] != SPRD_END_BYTE) 
+		return -1;
+	if(crc16(0,frame+1,frame_size-4) != ((frame[frame_size-3]<<8)/*'( )'!!*/ | frame[frame_size-2]))
+		return -1;
+	return 0;
+}
+/* send com frame without data field */
+int sprd_com_nodata(uint8_t bsl_com_byte)
+{
+	int r;
+	uint8_t data[8];
+	uint16_t crc;
+        data_buffer[0] = SPRD_START_BYTE;       //header
+        data_buffer[1] = 0x00;          
+        data_buffer[2] = bsl_com_byte;	       //type
+        data_buffer[3] = 0x00;
+        data_buffer[4] = 0x00;                  //data size
+        crc = crc16(0,&data_buffer[1],4);
+        data_buffer[5] = crc>>8;
+        data_buffer[6] = (crc&0xff);              //crc
+        data_buffer[7] = SPRD_END_BYTE;         //ender				
+        r = sprd_usb_transfer(data_buffer,8);
+        if(r) return r;
+	
+	return 0;	
+}
+/* phone ack only first commication (check_baudrate)*/
+int sprd_version(void)
+{
+	int r;int cnt;
+        data_buffer[0] = SPRD_START_BYTE;
+        r = sprd_usb_transfer(data_buffer,1);
+        if(r != 0)
+                return r;
+        r = sprd_usb_receive(data_buffer,&cnt);
+        if(r != 0)
+                return r;
+        r = sprd_verify_frame(data_buffer,cnt);
+        if(r != 0)
+                return r;
+        debug_print_hex(data_buffer,cnt);	
+}
+
+int sprd_connect(void)
+{
+	int cnt;int r;
+	/*
+	uint16_t crc;
+	data_buffer[0] = SPRD_START_BYTE;	//header
+	data_buffer[1] = 0x00;		
+	data_buffer[2] = BSL_CMD_CONNECT;	//type
+	data_buffer[3] = 0x00;
+	data_buffer[4] = 0x00;			//data size
+	data_buffer[5] = 0x00;
+	data_buffer[6] = 0x00;		//crc
+	data_buffer[7] = SPRD_END_BYTE;		//ender	
+	r = sprd_usb_transfer(data_buffer,8);
+	if(r) return r;
+	*/
+	r = sprd_com_nodata(BSL_CMD_CONNECT);
+	if(r) return r;
+	r = sprd_usb_receive(data_buffer,&cnt);
+	if(r) return r;
+	r = sprd_verify_frame(data_buffer,cnt);
+	if(r) return r;
+	debug_print_hex(data_buffer,cnt);
+
+	return 0;
+}
+
+int sprd_download(char *file)
+{
+
+	return 0;
+}
+
+int sprd_upload(char* part_name,int up_size)
+{
+
+	return 0;
+}
+
+int sprd_task(void)
+{
+	int r;
+
+	/* sprd version */
+	r = sprd_version();
+	if(r != 0) {
+		printf("sprd version error\n");
+	}else{
+		printf("sprd_version:\n");
+	}
+
+	/* sprd connect */
+	r = sprd_connect();
+	if(r != 0){
+		printf("sprd_connect failed\n");
+		return r;
+	}else{
+		printf("sprd_connect_success\n");
+	}
+	
+	/* sprd send fdl1 */
+
+	/* sprd send fdl2 */
+
+	
+	/* sprd read flash partation */
+			
+}
+
+int main(void)
+{
+	ssize_t cnt;
+	int r;int i;
+
+	/* init libusb */
+	r = libusb_init(NULL);
+	if(r < 0)
+		return r;
+
+	/* find the sprd device */
+	cnt = libusb_get_device_list(NULL,&devs);
+	if(cnt < 0)
+		return (int)cnt;
+
+	for(i = 0; i < cnt; i++){
+		if(is_sprd_dev(devs[i]) == 0){
+			sprd_dev = devs[i];
+			break;
+		}
+	}		
+
+	if(sprd_dev == NULL){
+		printf("sprd_dev is null\n");					
+		libusb_free_device_list(devs,1);
+		libusb_exit(NULL);
+		return ;
+	}
+		
+	/* print descriptor */
+	r = print_descriptor(sprd_dev);
+	if( r != 0)
+		return;
+	//////////////////////////////////////////////////////////////////////
+	r = libusb_open(sprd_dev,&sprd_handle);
+	if(r != 0){
+		printf("open sprd_dev error:%d\n",r);	
+		libusb_free_device_list(devs,1);
+		libusb_exit(NULL);
+		return ;
+	}
+	r = libusb_claim_interface(sprd_handle,SPRD_INTERFACE);//interface 0
+	if(r != 0){
+		printf("claim interface error:%d\n",r);
+	}
+	/*
+	data_buffer[0] = 0x7e;
+	sprd_usb_transfer(data_buffer,1);
+	sprd_usb_receive(data_buffer,&i);
+	print_hex(data_buffer,i);
+	*/	
+	sprd_task();
+	
+	libusb_release_interface(sprd_handle,0x00);
+		
+	libusb_close(sprd_handle);
+	//////////////////////////////////////////////////////////////////////
+
+	libusb_free_device_list(devs,1);		
+	libusb_exit(NULL);		
+	return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+

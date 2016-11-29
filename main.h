@@ -23,7 +23,7 @@
 
 /* usb bulk transfer buffer */
 extern uint8_t data_buffer[DATA_BUFFER_SIZE];
-
+extern uint8_t checksum_type;
 extern libusb_device **devs;
 extern libusb_device *sprd_dev;
 extern libusb_device_handle *sprd_handle;	

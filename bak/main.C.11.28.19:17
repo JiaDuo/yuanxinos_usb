@@ -61,15 +61,12 @@ char part_table[][15]={
 "internalsd",	//ffffffff = 4g
 "",		//end
 };
-char usage[][100]={
+char usage[][80]={
 "Usage:",
-"sudo ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]",
-"  ready|reset|read|shutdown|camera",
-"                       - Connect device(ready)",
+"sudo ./syber_usb [ready|reset|read] [partition name] [size] [file]",
+"  ready|reset|read     - Connect device(ready)",
 "                         Reset device(reset)",
 "                         Read partition(read)",
-"                         shutdown device(shutdown)",
-"                         read image file to directory \"syberos_camera\"(camera)",
 "  partition name       - The name of the partition to read (only read)",
 "  size                 - The size of the partition to read (only read)",
 "                         Support 'm/M' 'k/K'",
@@ -77,7 +74,6 @@ char usage[][100]={
 "                                                               ",
 "Example:",
 "sudo ./syber_usb",
-"        read camera to \"syberos_camera\"(full)",
 "        upload \"internalsd\" 200m(part)",
 "        upload \"data\" 200m(part)",
 "        upload \"boot\" 16m(full)",
@@ -86,7 +82,6 @@ char usage[][100]={
 "sudo ./syber_usb read boot 4096k boot4m.bin",
 "sudo ./syber_usb read boot 4096 boot4096bytes.bin",
 "sudo ./syber_usb reset",
-"sudo ./syber_usb shutdown",
 "",
 };
 
@@ -349,24 +344,6 @@ int sprd_normal_reset(void)
 	else return -1;
 
 	return 0;
-}
-
-/* power down device */
-int sprd_power_down(void)
-{
-        int r;int cnt;
-        r = sprd_com_nodata(BSL_CMD_POWER_DOWN_TYPE);
-        if(r) return r;
-        r = sprd_usb_receive(data_buffer,&cnt);
-        if(r) return r;
-        r = sprd_verify_frame(data_buffer,cnt);
-        if(r) return r;
-        debug_print_hex(data_buffer,cnt);
-        if(data_buffer[SPRD_FRAME_TYPE_OFF] == BSL_REP_ACK)
-                return 0;
-        else return -1;
-
-        return 0;
 }
 
 /*
@@ -632,7 +609,7 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 	               return -1;
         }
 	uint32_t up_size_count = up_size;
-	uint32_t up_size_percent = 100;/* if up_size_percent = 0,0% may not display Immediately */
+	uint32_t up_size_percent = 0;
 	uint32_t offset = 0;
 	uint32_t s_size = 0;
 	while(up_size){
@@ -821,8 +798,8 @@ int sprd_task_fdl1(void)
 	}
 	return 0;
 }
-/* read "internalsd" partition directioy "./DCIM/Camera/" to "syberos_camera" dir */
-int sprd_read_camera(void)
+/* read "internalsd" partition directioy "./DCIM/Camera/" to "out_picture" dir */
+int sprd_read_picture(void)
 {
     int r;
     int fd;
@@ -830,92 +807,19 @@ int sprd_read_camera(void)
     DIR dj;         /* Directory search object */
     FILINFO fno;    /* File information */
 
-    char path_dest[100]={'\0'};    
-    char path_src[100] ={'\0'};    
+    /* create & open "out_picture" dir (local) */
 
-    uint32_t r_size = 0;
-    uint32_t win_size = 0x3000;
-
-    uint32_t up_size_percent;
-    uint32_t total_read_size;
-    uint32_t file_size;
-
-    void * buff_p = malloc(win_size*2); //12k;
-    if(buff_p == NULL){
-	printf("sprd_read_camera");
-	return -1;
-    }
-
-    printf("Saving \"/DCIM/Camera/\" to \"./syberos_camera/\"\n");	
-    /* create & open & clean "syberos_picture" dir (local) */
-    r = system("rm -rf syberos_camera ; mkdir syberos_camera ; chmod 777 syberos_camera");
-    if(r != 0){
-    	printf("sprd_read_picture:system error:%d\n",r);
-	return r;
-    }
-
-    f_mount(&FatFs, "0:", 0); //drive number "0:" = USB device
+    f_mount(&FatFs, "", 0); //drive number "0:" = USB device
 
     fr = f_findfirst(&dj, &fno, "0:/DCIM/Camera", "*.jpg");  /* Start to search for photo files */
     while (fr == FR_OK && fno.fname[0]) {         /* Repeat while an item is found */
         printf("%s\n", fno.fname);                /* Display the object name */
-	/* write image files to local disk */	
-	path_dest[0] = '\0';
-	path_src[0] = '\0';
-	strcat(path_dest,"./syberos_camera/");
-	strcat(path_src,"0:/DCIM/Camera/");
+	/* write image files to local disk */
 
-        umask(0);
-        fd = open(strcat(path_dest,fno.fname),O_CREAT|O_WRONLY|O_TRUNC,00666);
-        if(fd == -1){
-                printf("sprd_read_camera:open or create %s error\n",fno.fname);
-                return -1;
-        }
-
-	fr = f_open(&Fil,strcat(path_src,fno.fname),FA_READ);
-	if(fr){
-		printf("sprd_read_camera:f_open error:%d\n",fr);
-		return -1;
-	}	
-	/* init percent task */
-	up_size_percent = 100;
-	total_read_size = 0;
-	file_size = f_size(&Fil);
-	/* task */
-	fr = f_read(&Fil,buff_p,win_size,&r_size);
-	while(fr == FR_OK && r_size){
-                r = write(fd,buff_p,r_size);                      
-                if(r == -1){
-                        printf("sprd_read_camera:write to %s error\n",fno.fname);
-                        return r;       
-                }
-                if(r != r_size){
-                        printf("sprd_read_camera:write %x bytes,not complete\n",r);
-                        return r;
-                }
-		/* percent display */
-		total_read_size += r_size;
-                if(up_size_percent !=  ((unsigned long)total_read_size*100/file_size)){
-                        up_size_percent = (unsigned long)total_read_size*100/file_size;
-                        printf("\r(%dK):%%%d",file_size/1024,up_size_percent);
-                        fflush(stdout);
-                        if(up_size_percent == 100) putchar('\n');
-                }
-		/* read next image file */			
-		fr = f_read(&Fil,buff_p,win_size,&r_size);
-	}
-	if(fr != FR_OK){
-		printf("sprd_read_camera:f_read error:%d\n",fr);
-		return fr;
-	}
-	
-	f_close(&Fil);
-	close(fd);
-	
         fr = f_findnext(&dj, &fno);               /* Search for next item */
     }
     if(fr != FR_OK){
-	printf("sprd_read_camera:f_findfrist error:%d\n",fr);
+	printf("sprd_read_picture:f_findfrist error:%d\n",fr);
 	return -1;
     }
 	
@@ -924,11 +828,10 @@ int sprd_read_camera(void)
     /* send BSL_CMD_READ_FLASH_END cmd */
     r = disk_ioctl(0,CTRL_SPRD_FAT_OPS_END,NULL);
     if(r != 0){
-    	printf("sprd_read_camera:disk ioctl error:%d\n",r);	
+    	printf("sprd_read_picture:disk ioctl error:%d\n",r);	
 	return r;
     }
 
-    free(buff_p);
     return 0;
 }
 
@@ -999,7 +902,6 @@ int main(int argc,char **argv)
 		sprd_task_bootrom();
 		checksum_type = TYPE_IPSUM;
 		sprd_task_fdl1();
-		sprd_read_camera();
         	sprd_upload("boot",0x01000000,0x3000,"boot-16m.img");
 		sprd_upload("internalsd",200*1024*1024,0x3000,"internalsd-200m.img");
 		sprd_upload("data",200*1024*1024,0x3000,"data-200m.img");
@@ -1034,16 +936,6 @@ int main(int argc,char **argv)
 		}
 		printf("reset:ok\n");
 	}
-        else if(strcmp(argv[1],"shutdown") == 0 && argc == 2){
-                //reset task:reset phone to normal
-                checksum_type = TYPE_IPSUM;
-                r = sprd_power_down();
-                if(r != 0){
-                        printf("sprd_power_down() error:%d\n",r);
-                        goto error_release;
-                }
-                printf("shutdown:ok\n");
-        }	
 	else if(strcmp(argv[1],"read") == 0 && argc == 5){
 		//read task:check argv[?],read partition	
 		checksum_type = TYPE_IPSUM;
@@ -1072,13 +964,13 @@ int main(int argc,char **argv)
 			goto error_release;
 		}		
 	}
-	else if(strcmp(argv[1],"camera") == 0 && argc == 2){
-		printf("start get camera files\n");
+	else if(strcmp(argv[1],"picture") == 0 && argc == 2){
+		printf("start get picture files\n");
 		checksum_type = TYPE_IPSUM;
 		//task
-		r = sprd_read_camera();
+		r = sprd_read_picture();
 		if(r != 0){
-			printf("sprd_read_camera error:%d\n",r);
+			printf("sprd_read_picture error:%d\n",r);
 			goto error_release;
 		}
 	}

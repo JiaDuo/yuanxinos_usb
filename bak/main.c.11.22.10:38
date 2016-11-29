@@ -12,8 +12,7 @@
 #include "main.h"
 #include "checksum.h"
 #include "protocol.h"
-#include "ff.h"
-#include "diskio.h"
+
 
 /* usb bulk transfer buffer */
 uint8_t data_buffer[DATA_BUFFER_SIZE];
@@ -24,10 +23,6 @@ libusb_device *sprd_dev = NULL;
 libusb_device_handle *sprd_handle;	
 /* check sum type */
 uint8_t checksum_type = TYPE_CRC;
-/* FatFs work area needed for each volume */
-FATFS FatFs;
-/* File object needed for each open file */
-FIL Fil;                   
 
 char part_table[][15]={
 "prodnv",	//05000000 = 80m
@@ -60,34 +55,6 @@ char part_table[][15]={
 "data",		//00100000 = 1m(actual=4g)
 "internalsd",	//ffffffff = 4g
 "",		//end
-};
-char usage[][100]={
-"Usage:",
-"sudo ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]",
-"  ready|reset|read|shutdown|camera",
-"                       - Connect device(ready)",
-"                         Reset device(reset)",
-"                         Read partition(read)",
-"                         shutdown device(shutdown)",
-"                         read image file to directory \"syberos_camera\"(camera)",
-"  partition name       - The name of the partition to read (only read)",
-"  size                 - The size of the partition to read (only read)",
-"                         Support 'm/M' 'k/K'",
-"  file                 - The name of the file to store (only read)",
-"                                                               ",
-"Example:",
-"sudo ./syber_usb",
-"        read camera to \"syberos_camera\"(full)",
-"        upload \"internalsd\" 200m(part)",
-"        upload \"data\" 200m(part)",
-"        upload \"boot\" 16m(full)",
-"sudo ./syber_usb ready",
-"sudo ./syber_usb read internalsd 200m internalsd200m.bin",
-"sudo ./syber_usb read boot 4096k boot4m.bin",
-"sudo ./syber_usb read boot 4096 boot4096bytes.bin",
-"sudo ./syber_usb reset",
-"sudo ./syber_usb shutdown",
-"",
 };
 
 int is_sprd_dev(libusb_device *dev)
@@ -351,24 +318,6 @@ int sprd_normal_reset(void)
 	return 0;
 }
 
-/* power down device */
-int sprd_power_down(void)
-{
-        int r;int cnt;
-        r = sprd_com_nodata(BSL_CMD_POWER_DOWN_TYPE);
-        if(r) return r;
-        r = sprd_usb_receive(data_buffer,&cnt);
-        if(r) return r;
-        r = sprd_verify_frame(data_buffer,cnt);
-        if(r) return r;
-        debug_print_hex(data_buffer,cnt);
-        if(data_buffer[SPRD_FRAME_TYPE_OFF] == BSL_REP_ACK)
-                return 0;
-        else return -1;
-
-        return 0;
-}
-
 /*
 *dir:0 0x7e->0x7d 0x5e
 *      0x7d->0x7d 0x5d
@@ -424,9 +373,7 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 	uint16_t crc;
 	uint8_t com_buff[16];
 	/* start */
-#ifdef SPRD_DEBUG
 	printf("sprd download step:start\n");
-#endif
 	com_buff[i++] = SPRD_START_BYTE;
 	com_buff[i++] = 0x00;
 	com_buff[i++] = BSL_CMD_START_DATA; //com
@@ -458,9 +405,7 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 	debug_print_hex(data_buffer,cnt);
 
 	/* middle */
-#ifdef SPRD_DEBUG
 	printf("sprd download step:middle\n");
-#endif
 	int fd = open(file_name,O_RDONLY);
 	if(fd == -1){
 		printf("middle:open %s error\n",file_name);
@@ -470,9 +415,7 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 	ssize_t r_size;
 	char *s_buffer = malloc(win_size*2);
 	while(download_size){
-#ifdef SPRD_DEBUG
 		printf("download_size is %d\n",download_size);
-#endif
 		r_size = (download_size > win_size ) ? win_size:download_size;
 		r_size = read(fd,(void*)(data_buffer+SPRD_FRAME_DATA_OFF),r_size);
 		if(r_size == 0){
@@ -540,9 +483,7 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 		return -1;
 	}
 	/* end */
-#ifdef SPRD_DEBUG
 	printf("sprd download step:end\n");
-#endif
 	r = sprd_com_nodata(BSL_CMD_END_DATA);
 	if(r) return r;
 	r = sprd_usb_receive(data_buffer,&cnt);
@@ -562,8 +503,6 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 *part_name - partition name
 *up_size - size of read
 *win_size - size of one receive
-*         Larger and faster, according to the mobile phone transmission capacity adjustment
-          win_size < mobile maximum transmission size
 *file_name - file to store
 */
 int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_name)
@@ -573,11 +512,8 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 	uint8_t com_buffer[84];
 	char *s_buffer = malloc(win_size*2);
 
-	printf("Saving partition:'%s'(size=0x%x) to '%s'\n",part_name,up_size,file_name);
 	/* start */
-#ifdef SPRD_DEBUG
 	printf("sprd upload step:start\n");
-#endif
 	memset(com_buffer,0x00,84);
         com_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
         com_buffer[1] = 0x00;
@@ -616,23 +552,18 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 		return -1;
 	}
 	if(data_buffer[SPRD_FRAME_TYPE_OFF] == BSL_REP_DOWN_SIZE_ERROR){
-#ifdef SPRD_DEBUG
 		printf("partition  size error(not care!)\n");
-#endif
 	}
 	
 	/* middle */
-#ifdef SPRD_DEBUG
 	printf("sprd upload step:middle\n");
-#endif
 	umask(0);
 	int fd = open(file_name,O_CREAT|O_WRONLY|O_TRUNC,00666);
         if(fd == -1){
                	printf("middle:open or create %s error\n",file_name);
 	               return -1;
         }
-	uint32_t up_size_count = up_size;
-	uint32_t up_size_percent = 100;/* if up_size_percent = 0,0% may not display Immediately */
+
 	uint32_t offset = 0;
 	uint32_t s_size = 0;
 	while(up_size){
@@ -689,13 +620,6 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 
 		offset += s_size;
 		up_size -= s_size;
-
-		if(up_size_percent !=  ((unsigned long)offset*100/up_size_count)){
-			up_size_percent = (unsigned long)offset*100/up_size_count;
-			printf("\rupload percent:%%%d",up_size_percent);
-			fflush(stdout);
-			if(up_size_percent == 100) putchar('\n');
-		}
 	}
 
 	free(s_buffer);
@@ -704,9 +628,7 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 		return -1;
 	}
 	/* end */
-#ifdef SPRD_DEBUG
 	printf("sprd upload step:end\n");
-#endif
 	r = sprd_com_nodata(BSL_CMD_READ_FLASH_END);
 	if(r != 0){
 		printf("end:sprd com nodata error:%d\n",r);
@@ -821,129 +743,12 @@ int sprd_task_fdl1(void)
 	}
 	return 0;
 }
-/* read "internalsd" partition directioy "./DCIM/Camera/" to "syberos_camera" dir */
-int sprd_read_camera(void)
-{
-    int r;
-    int fd;
-    FRESULT fr;     /* Return value */
-    DIR dj;         /* Directory search object */
-    FILINFO fno;    /* File information */
 
-    char path_dest[100]={'\0'};    
-    char path_src[100] ={'\0'};    
-
-    uint32_t r_size = 0;
-    uint32_t win_size = 0x3000;
-
-    uint32_t up_size_percent;
-    uint32_t total_read_size;
-    uint32_t file_size;
-
-    void * buff_p = malloc(win_size*2); //12k;
-    if(buff_p == NULL){
-	printf("sprd_read_camera");
-	return -1;
-    }
-
-    printf("Saving \"/DCIM/Camera/\" to \"./syberos_camera/\"\n");	
-    /* create & open & clean "syberos_picture" dir (local) */
-    r = system("rm -rf syberos_camera ; mkdir syberos_camera ; chmod 777 syberos_camera");
-    if(r != 0){
-    	printf("sprd_read_picture:system error:%d\n",r);
-	return r;
-    }
-
-    f_mount(&FatFs, "0:", 0); //drive number "0:" = USB device
-
-    fr = f_findfirst(&dj, &fno, "0:/DCIM/Camera", "*.jpg");  /* Start to search for photo files */
-    while (fr == FR_OK && fno.fname[0]) {         /* Repeat while an item is found */
-        printf("%s\n", fno.fname);                /* Display the object name */
-	/* write image files to local disk */	
-	path_dest[0] = '\0';
-	path_src[0] = '\0';
-	strcat(path_dest,"./syberos_camera/");
-	strcat(path_src,"0:/DCIM/Camera/");
-
-        umask(0);
-        fd = open(strcat(path_dest,fno.fname),O_CREAT|O_WRONLY|O_TRUNC,00666);
-        if(fd == -1){
-                printf("sprd_read_camera:open or create %s error\n",fno.fname);
-                return -1;
-        }
-
-	fr = f_open(&Fil,strcat(path_src,fno.fname),FA_READ);
-	if(fr){
-		printf("sprd_read_camera:f_open error:%d\n",fr);
-		return -1;
-	}	
-	/* init percent task */
-	up_size_percent = 100;
-	total_read_size = 0;
-	file_size = f_size(&Fil);
-	/* task */
-	fr = f_read(&Fil,buff_p,win_size,&r_size);
-	while(fr == FR_OK && r_size){
-                r = write(fd,buff_p,r_size);                      
-                if(r == -1){
-                        printf("sprd_read_camera:write to %s error\n",fno.fname);
-                        return r;       
-                }
-                if(r != r_size){
-                        printf("sprd_read_camera:write %x bytes,not complete\n",r);
-                        return r;
-                }
-		/* percent display */
-		total_read_size += r_size;
-                if(up_size_percent !=  ((unsigned long)total_read_size*100/file_size)){
-                        up_size_percent = (unsigned long)total_read_size*100/file_size;
-                        printf("\r(%dK):%%%d",file_size/1024,up_size_percent);
-                        fflush(stdout);
-                        if(up_size_percent == 100) putchar('\n');
-                }
-		/* read next image file */			
-		fr = f_read(&Fil,buff_p,win_size,&r_size);
-	}
-	if(fr != FR_OK){
-		printf("sprd_read_camera:f_read error:%d\n",fr);
-		return fr;
-	}
-	
-	f_close(&Fil);
-	close(fd);
-	
-        fr = f_findnext(&dj, &fno);               /* Search for next item */
-    }
-    if(fr != FR_OK){
-	printf("sprd_read_camera:f_findfrist error:%d\n",fr);
-	return -1;
-    }
-	
-    f_closedir(&dj);
-
-    /* send BSL_CMD_READ_FLASH_END cmd */
-    r = disk_ioctl(0,CTRL_SPRD_FAT_OPS_END,NULL);
-    if(r != 0){
-    	printf("sprd_read_camera:disk ioctl error:%d\n",r);	
-	return r;
-    }
-
-    free(buff_p);
-    return 0;
-}
 
 int main(int argc,char **argv)
 {
 	ssize_t cnt;
 	int r = 0;int i;
-
-	/* help info */
-	if(argc == 2 && strcmp(argv[1],"help") == 0){
-		for(i = 0;usage[i][0] != '\0';i++){
-			printf("%s\n",usage[i]);
-		}		
-		return 0;
-	}
 
 	checksum_type = TYPE_CRC;	
 	/* init libusb */
@@ -974,7 +779,7 @@ int main(int argc,char **argv)
 	r = print_descriptor(sprd_dev);
 	if( r != 0)
 		return;
-	/* open & operate */
+	//////////////////////////////////////////////////////////////////////
 	r = libusb_open(sprd_dev,&sprd_handle);
 	if(r != 0){
 		printf("open sprd_dev error(please run as root):%d\n",r);	
@@ -986,12 +791,11 @@ int main(int argc,char **argv)
 	if(r != 0){
 		printf("claim interface error:%d\n",r);
 	}
-#ifdef SPRD_DEBUG
+
 	printf("argc:%d\n",argc);
 	for(i = 0;i < argc;i++){	
 		printf("argv[i]:%s\n",argv[i]);	
 	}
-#endif
 	if(argc == 1){
 		printf("start default demo\n");
 		//demo task:read boot-16m,internalsd-200m,data-200m,reset
@@ -999,7 +803,6 @@ int main(int argc,char **argv)
 		sprd_task_bootrom();
 		checksum_type = TYPE_IPSUM;
 		sprd_task_fdl1();
-		sprd_read_camera();
         	sprd_upload("boot",0x01000000,0x3000,"boot-16m.img");
 		sprd_upload("internalsd",200*1024*1024,0x3000,"internalsd-200m.img");
 		sprd_upload("data",200*1024*1024,0x3000,"data-200m.img");
@@ -1034,16 +837,6 @@ int main(int argc,char **argv)
 		}
 		printf("reset:ok\n");
 	}
-        else if(strcmp(argv[1],"shutdown") == 0 && argc == 2){
-                //reset task:reset phone to normal
-                checksum_type = TYPE_IPSUM;
-                r = sprd_power_down();
-                if(r != 0){
-                        printf("sprd_power_down() error:%d\n",r);
-                        goto error_release;
-                }
-                printf("shutdown:ok\n");
-        }	
 	else if(strcmp(argv[1],"read") == 0 && argc == 5){
 		//read task:check argv[?],read partition	
 		checksum_type = TYPE_IPSUM;
@@ -1066,34 +859,98 @@ int main(int argc,char **argv)
 				break;
 			default:break;
 		}
-		r = sprd_upload(argv[2],i_size,0x3000,argv[4]);//12K
+		r = sprd_upload(argv[2],i_size,0x3000,argv[4]);
 		if(r != 0){
 			printf("sprd_upload error:%d\n",r);
 			goto error_release;
 		}		
 	}
-	else if(strcmp(argv[1],"camera") == 0 && argc == 2){
-		printf("start get camera files\n");
-		checksum_type = TYPE_IPSUM;
-		//task
-		r = sprd_read_camera();
-		if(r != 0){
-			printf("sprd_read_camera error:%d\n",r);
-			goto error_release;
-		}
-	}
 	else{
 		printf("param not correct\n");
 		goto error_release;
 	}
+	
+
+/*
+	checksum_type = TYPE_CRC;
+	sprd_task_bootrom();
+
+	checksum_type = TYPE_IPSUM;
+	sprd_task_fdl1();
+
+	checksum_type = TYPE_IPSUM;
+	sprd_upload("boot",0x01000000,0x3000,"boot.img");
+
+	if(sprd_normal_reset() == 0){
+		printf("sprd reset to normal\n");
+	}else printf("sprd reset error\n");
+*/
+
+/*
+uint8_t part[84]={0x7e ,0x00 ,0x10 ,0x00  ,0x4c ,0x62 ,0x00 ,0x6f
+               ,0x00 ,0x6f ,0x00 ,0x74  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x00 ,0x00 ,0x00 ,0x00  ,0x00 ,0x00 ,0x00 ,0x00
+               ,0x01 ,0x4b ,0xa1 ,0x7e};
+uint8_t c[16]={0x7e, 0x00, 0x11, 0x00,  0x08, 0x00, 0x30, 0x00,
+		0x00,0x00,0x00,0x00,0x00,0xff,0xb6,0x7e
+};
+
+	r = sprd_usb_transfer(part,84);
+	if(r != 0) printf("test:sprd_usb_transfer error:%d\n",r);
+
+	r = sprd_usb_receive(data_buffer,&i);
+	if(r != 0)	printf("test:sprd_usb_receive error:%d\n",r);
+	else debug_print_hex(data_buffer,i);
+
+	r = sprd_usb_receive(data_buffer,&i);
+	if(r != 0)	printf("test:sprd_usb_receive error:%d\n",r);
+	else debug_print_hex(data_buffer,i);
+
+        r = sprd_usb_transfer(c,16);
+        if(r != 0) printf("test:sprd_usb_transfer error:%d\n",r);
+	r = sprd_usb_receive(data_buffer,&i);
+	if(r != 0)	printf("test:sprd_usb_receive error:%d\n",r);
+	else debug_print_hex(data_buffer,i);
+*/
+	/*
+	uint8_t arry[8]={0x7e,0x00,0x00,0x00 ,0x00,0xff,0xff,0x7e};
+	r = sprd_usb_transfer(arry,1);
+	if(r !=0) printf("**sprd_usb_transfer 0x7e error:%d\n",r);
+	r = sprd_usb_receive(data_buffer,&i);
+	debug_print_hex(data_buffer,i);
+        r = sprd_usb_transfer(arry,8);
+        if(r !=0) printf("**sprd_usb_transfer connect error:%d\n",r);
+        r = sprd_usb_receive(data_buffer,&i);
+        debug_print_hex(data_buffer,i);
+	*/
 
 error_release:
 	libusb_release_interface(sprd_handle,0x00);
+		
 	libusb_close(sprd_handle);
+	/////////////////////////////////////////////////////////////////////
 
 	libusb_free_device_list(devs,1);		
 	libusb_exit(NULL);		
 
 	return r;
 }
+
+
+
+
+
+
+
+
+
+
+
 
