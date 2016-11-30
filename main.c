@@ -830,6 +830,8 @@ int sprd_read_camera(void)
     DIR dj;         /* Directory search object */
     FILINFO fno;    /* File information */
 
+    uint32_t image_count = 0;
+
     char path_dest[100]={'\0'};    
     char path_src[100] ={'\0'};    
 
@@ -859,6 +861,7 @@ int sprd_read_camera(void)
     fr = f_findfirst(&dj, &fno, "0:/DCIM/Camera", "*.jpg");  /* Start to search for photo files */
     while (fr == FR_OK && fno.fname[0]) {         /* Repeat while an item is found */
         printf("%s\n", fno.fname);                /* Display the object name */
+	image_count++;
 	/* write image files to local disk */	
 	path_dest[0] = '\0';
 	path_src[0] = '\0';
@@ -917,6 +920,9 @@ int sprd_read_camera(void)
     if(fr != FR_OK){
 	printf("sprd_read_camera:f_findfrist error:%d\n",fr);
 	return -1;
+    }
+    if(image_count == 0){
+	printf("Not Found Image file\n");
     }
 	
     f_closedir(&dj);
