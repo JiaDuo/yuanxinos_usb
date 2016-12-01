@@ -5,8 +5,8 @@ debug:
 
 all:release debug
 
-install:
-	cp syber_usb /usr/local/bin/
+#install:
+#	cp syber_usb /usr/local/bin/
 
 clean:
 	rm -rf syber_usb_debug syber_usb

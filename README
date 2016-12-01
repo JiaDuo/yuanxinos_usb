@@ -21,7 +21,6 @@ read image files:0.5MBytes/s.(because  _MAX_SS must be 512 bytes)
 Install:
 install libusb-1.0-0 libusb-1.0-0-dev
 make
-sudo make install
 
 Usage:
 [sudo] ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]
