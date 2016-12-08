@@ -28,4 +28,14 @@ extern libusb_device **devs;
 extern libusb_device *sprd_dev;
 extern libusb_device_handle *sprd_handle;	
 
+int is_sprd_dev(libusb_device *dev);
+void print_hex(uint8_t* str,int length);
+void debug_print_hex(uint8_t* str,int length);
+unsigned long get_file_size(const char *path);
+int sprd_usb_transfer(uint8_t* data,int size);
+int sprd_usb_receive(uint8_t* data,int *size);
+int sprd_verify_frame(uint8_t* frame,int frame_size);
+int sprd_com_nodata(uint8_t bsl_com_byte);
+int sprd_frame_exchange(char *dst, const char *src, int src_size, int dir);
+
 #endif
