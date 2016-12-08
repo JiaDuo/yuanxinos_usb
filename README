@@ -1,57 +1,80 @@
-syber_usb - 0.2
+syber_usb - 0.3
+===============
 Yuan Xin mobile phone  tool
 by Duo Jia, jiaduo@syberos.com
-Test on x86_64(Ubuntu14.04 & 15.04)
+Test on x86_64(Ubuntu14.04 & 15.04) , YUANXIN S1
 
-Remember:
-Run as root!
-Do not run in the virtual box linux (virtual machine), will lose data!
+NOTE:
+========
+1.Run as root!
+  Do not run in the virtual box linux (virtual machine,noly usb1.0), will lose data!
+  If you read the '/data' directory, please ensure that the 'data' partition has been formatted.
+  (ensure that the phone properly initialized).
+2.sometimes phone down!!!,press volum down & power,a moment,press volum up,waiting.
+  or
+  sudo ./syber_usb reset
+  or 
+  sudo ./syber_usb shutdown
 
-Note:
-sometimes phone down!!!,press volum down & power,a moment,press volum up,waiting.
-or
-sudo ./syber_usb reset
-or 
-sudo ./syber_usb shutdown
+SPEED(self-test):
+========
+  read partition:2MBytes/s,Depending on the CPU speed and program.
+  read image files:0.5MBytes/s.(because  _MAX_SS must be 512 bytes)
+  download partition:20MBytes/s
 
-Upload Speed:
-read partition:2MBytes/s(self-test),Depending on the CPU speed and program.
-read image files:0.5MBytes/s.(because  _MAX_SS must be 512 bytes)
+INSTALL:
+========
+  install 'libusb-1.0-0' 'libusb-1.0-0-dev'
+  make 
+  sudo make install
 
-Install:
-install libusb-1.0-0 libusb-1.0-0-dev
-make
-
-Usage:
-[sudo] ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]
-  ready|reset|read|shutdown|camera
-                       - Connect device(ready)
-                         Reset device(reset)
-                         Read partition(read)
-                         shutdown device(shutdown)
-                         read image file to directory "syberos_camera"(camera)
-  partition name       - The name of the partition to read (only read)
-  size                 - The size of the partition to read (only read)
-                         Support 'm/M' 'k/K'
-  file                 - The name of the file to store (only read)
-
-Example:
-sudo ./syber_usb 
-	read camera to "syberos_camera"(full)
-        upload "internalsd" 200m(part)
-        upload "data" 200m(part)
-        upload "boot" 16m(full)
-sudo ./syber_usb ready
-sudo ./syber_usb read internalsd 200m internalsd200m.bin
-sudo ./syber_usb read boot 4096k boot4m.bin
-sudo ./syber_usb read boot 4096 boot4096bytes.bin
-sudo ./syber_usb reset
-sudo ./syber_usb shutdown
+USAGE:
+========
+  [sudo] ./syber_usb [ready|reset|shutdown|camera|read|write|ext4fs] [args]
+  [sudo] ./syber_usb read {partition name} {size} {file}
+  [sudo] ./syber_usb write {partition name} {file}
+  [sudo] ./syber_usb ext4fs {ls|get} {dir|file}
+    ready|reset|shutdown|camera|read|write|ext4fs
+                         - Connect device(ready)
+                           Reset device(reset)
+                           shutdown device(shutdown)
+                           Read image file to directory "syberos_camera"(camera)
+                           Read partition(read)
+			   Write partition(write)
+                           Browse ext4fs directory or get ext4fs files(ext4fs)
+    partition name       - The name of the partition to read&write
+    size                 - The size of the partition to read
+                           Support 'm/M' 'k/K' -  1k/K=1024Bytes
+    file                 - The name of the file to read&write
+    ls|get               - Browse directory or get file
+    dir                  - Directory to browse
+  
+  Example:
+  sudo ./syber_usb 
+    	  read camera to "syberos_camera"(full)
+          upload "internalsd" 200m(part)
+          upload "data" 200m(part)
+          upload "boot" 16m(full)
+  sudo ./syber_usb ready
+  sudo ./syber_usb read internalsd 200m internalsd200m.bin
+  sudo ./syber_usb read boot 4096k boot4m.bin
+  sudo ./syber_usb read boot 4096 boot4096bytes.bin
+  sudo ./syber_usb write ubootlogo ubootlogo.img
+  sudo ./syber_usb ext4fs ls /
+  sudo ./syber_usb ext4fs get /etc/passwd
+  sudo ./syber_usb reset
+  sudo ./syber_usb shutdown
 
 	
-History:
+HISTORY:
+========
+V0.3	-2016-12-07
+	add Read the '/' and get ext4 files(except '/home/user/'('internalsd' partition)).
+	add read ext4 file. 
+	fix some bugs.
+
 V0.2	-2016-11-29
-	add read image file using 'fatfs'.
+	add read image file using 'fatfs'(/home/user/DCIM/).
 	fix some bugs.
 	add 'shutdown' function.
 	add 'camera' function.

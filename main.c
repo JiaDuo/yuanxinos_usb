@@ -15,6 +15,11 @@
 #include "ff.h"
 #include "diskio.h"
 
+#include "ext4.h"
+#include "blockdev.h"
+#include "test_lwext4.h"
+#define SYBER_USB_VERSION "VERSION - 0.3"
+
 /* usb bulk transfer buffer */
 uint8_t data_buffer[DATA_BUFFER_SIZE];
 
@@ -28,6 +33,11 @@ uint8_t checksum_type = TYPE_CRC;
 FATFS FatFs;
 /* File object needed for each open file */
 FIL Fil;                   
+
+/**@brief   Block device handle.*/
+static struct ext4_blockdev *bd;
+/**@brief   Block cache handle.*/
+static struct ext4_bcache *bc;
 
 char part_table[][15]={
 "prodnv",	//05000000 = 80m
@@ -61,34 +71,29 @@ char part_table[][15]={
 "internalsd",	//ffffffff = 4g
 "",		//end
 };
-char usage[][100]={
-"Usage:",
-"sudo ./syber_usb [ready|reset|read|shutdown|camera] [partition name] [size] [file]",
-"  ready|reset|read|shutdown|camera",
-"                       - Connect device(ready)",
-"                         Reset device(reset)",
-"                         Read partition(read)",
-"                         shutdown device(shutdown)",
-"                         read image file to directory \"syberos_camera\"(camera)",
-"  partition name       - The name of the partition to read (only read)",
-"  size                 - The size of the partition to read (only read)",
-"                         Support 'm/M' 'k/K'",
-"  file                 - The name of the file to store (only read)",
-"                                                               ",
-"Example:",
-"sudo ./syber_usb",
-"        read camera to \"syberos_camera\"(full)",
-"        upload \"internalsd\" 200m(part)",
-"        upload \"data\" 200m(part)",
-"        upload \"boot\" 16m(full)",
-"sudo ./syber_usb ready",
-"sudo ./syber_usb read internalsd 200m internalsd200m.bin",
-"sudo ./syber_usb read boot 4096k boot4m.bin",
-"sudo ./syber_usb read boot 4096 boot4096bytes.bin",
-"sudo ./syber_usb reset",
-"sudo ./syber_usb shutdown",
-"",
-};
+
+char *usage="\
+USAGE:\n\
+========\n\
+  [sudo] ./syber_usb [ready|reset|shutdown|camera|read|write|ext4fs] [args]\n\
+  [sudo] ./syber_usb read {partition name} {size} {file}\n\
+  [sudo] ./syber_usb write {partition name} {file}\n\
+  [sudo] ./syber_usb ext4fs {ls|get} {dir|file}\n\
+    ready|reset|shutdown|camera|read|write|ext4fs\n\
+                         - Connect device(ready)\n\
+                           Reset device(reset)\n\
+                           shutdown device(shutdown)\n\
+                           Read image file to directory 'syberos_camera'(camera)\n\
+                           Read partition(read)\n\
+                           Write partition(write)\n\
+                           Browse ext4fs directory or get ext4fs files(ext4fs)\n\
+    partition name       - The name of the partition to read&write\n\
+    size                 - The size of the partition to read\n\
+                           Support 'm/M' 'k/K' -  1k/K=1024Bytes\n\
+    file                 - The name of the file to read&write\n\
+    ls|get               - Browse directory or get file\n\
+    dir                  - Directory to browse\n\
+";
 
 int is_sprd_dev(libusb_device *dev)
 {
@@ -558,6 +563,204 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 		
 	return 0;
 }
+
+/* write file to partition 
+*part_name - partition name
+*down_size - size of write
+*file_name - file to write
+*win_size - size of one receive
+*         Larger and faster, according to the mobile phone transmission capacity adjustment
+*         win_size < mobile maximum transmission size
+*/
+int sprd_download_partition(char* part_name,const char* file_name,uint32_t down_size,uint32_t win_size)
+{
+			
+	int i;int r;int cnt;
+	uint16_t crc;
+	uint8_t com_buffer[84];
+	char *s_buffer = malloc(win_size*2);
+	/* check param */
+	if(!down_size){
+		printf("download size = 0,nothing to do\n");
+		return -1;
+	}
+	if(file_name == NULL || part_name == NULL){
+		printf("file_name/part_name is NULL\n");
+		return -1;
+	}
+	if(access(file_name,F_OK) != 0){
+		printf("file '%s' not exist\n",file_name);
+		return -1;
+	}
+	struct stat sb;
+        stat(file_name, &sb);
+        if ((sb.st_mode & S_IFMT) != S_IFREG) {
+		printf("file '%s' is not regular file\n",file_name);
+		return -1;
+        }
+
+	printf("Writing file:'%s'(size=0x%x) to partition '%s'\n",file_name,down_size,part_name);
+	/* start */
+#ifdef SPRD_DEBUG
+	printf("sprd download partition step:start\n");
+#endif
+	memset(com_buffer,0x00,84);
+        com_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
+        com_buffer[1] = 0x00;
+        com_buffer[SPRD_FRAME_TYPE_OFF] = BSL_CMD_START_DATA;
+        com_buffer[SPRD_FRAME_DATA_SIZE_OFF] = 0x4c>>8;
+        com_buffer[SPRD_FRAME_DATA_SIZE_OFF+1] = 0x4c;
+	com_buffer[84-1] = SPRD_END_BYTE;
+	for(i = 0;part_name[i] != '\0';i++){
+		com_buffer[SPRD_FRAME_DATA_OFF+i*2] = part_name[i];
+		com_buffer[SPRD_FRAME_DATA_OFF+i*2+1] = 0x00;
+	}
+	*((uint32_t*)(com_buffer+77)) = down_size; //download size
+	crc = checksum(checksum_type,com_buffer+1,84-4);
+	com_buffer[84-3] = crc>>8;
+	com_buffer[84-2] = crc;
+	
+	cnt = sprd_frame_exchange(s_buffer,com_buffer,84,0);
+	debug_print_hex(s_buffer,cnt);
+
+	r = sprd_usb_transfer(s_buffer,cnt);
+	if(r != 0){
+		printf("start:sprd usb transfer error:%d\n",r);
+		return r;
+	}
+	for(i = 5;i ;i--){
+		r = sprd_usb_receive(data_buffer,&cnt);
+		if(r) continue;else break;
+	}
+	if(!i){
+		printf("start:sprd usb receive error:%d\n",r);
+		return r;
+	}
+	debug_print_hex(data_buffer,cnt);	
+	if(sprd_verify_frame(data_buffer,cnt) != 0){
+		printf("start:sprd verify frame error\n");
+		return -1;
+	}
+	if(data_buffer[SPRD_FRAME_TYPE_OFF] != BSL_REP_ACK){
+		if(data_buffer[SPRD_FRAME_TYPE_OFF] == BSL_REP_DOWN_SIZE_ERROR){
+			printf("start:download size error(file '%s' is larger than partition '%s' size?)\n",file_name,part_name);
+			return -1;
+		}
+		else {
+			printf("start:sprd ack error\n");
+			return -1;
+		}
+	}
+	
+	/* middle */
+#ifdef SPRD_DEBUG
+	printf("sprd download partition step:middle\n");
+#endif
+	umask(0);
+	int fd = open(file_name,O_RDONLY);
+        if(fd == -1){
+               	printf("middle:open %s error\n",file_name);
+	               return -1;
+        }
+	uint32_t down_size_count = down_size;
+	uint32_t down_size_percent = 255;/* if percent = 0,0% may not display Immediately */
+	uint32_t offset = 0;
+	uint32_t r_size = 0;
+	while(down_size){
+#ifdef SPRD_DEBUG
+                printf("down_size is %d\n",down_size);
+#endif
+                r_size = (down_size > win_size ) ? win_size:down_size;
+                r_size = read(fd,(void*)(data_buffer+SPRD_FRAME_DATA_OFF),r_size);
+                if(r_size == 0){
+                        printf("middle:read file error\n");
+                        return -1;
+                }
+
+                data_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
+                data_buffer[1] = 0x00;
+                data_buffer[SPRD_FRAME_TYPE_OFF] = BSL_CMD_MIDST_DATA;
+                data_buffer[SPRD_FRAME_DATA_SIZE_OFF] = r_size>>8;
+                data_buffer[SPRD_FRAME_DATA_SIZE_OFF+1] = r_size;
+                crc = checksum(checksum_type,data_buffer+1,r_size+4);
+                data_buffer[SPRD_FRAME_DATA_OFF+r_size] = crc>>8;
+                data_buffer[SPRD_FRAME_DATA_OFF+r_size+1] = crc;
+                data_buffer[r_size+8-1] = SPRD_END_BYTE;
+                //send frame steaming 
+                //0x7e = 0x7d 0x7e^0x20 0x7d = 0x7d 0x7d^0x20 , except header & ender           
+		cnt = r_size + 8;
+		cnt = sprd_frame_exchange(s_buffer,data_buffer,cnt,0);
+                debug_print_hex(s_buffer,cnt);
+
+                r = sprd_usb_transfer(s_buffer,cnt);
+                if(r) {
+                        printf("middle:sprd_usb_transfer error:%d\n",r);
+                        free(s_buffer);
+                        return r;
+                }
+                r = sprd_usb_receive(data_buffer,&cnt);
+                if(r){
+                        printf("middle:sprd_usb_receive error:%d\n",r);
+                        free(s_buffer);
+                        return r;
+                }
+                r = sprd_verify_frame(data_buffer,cnt);
+                if(r){
+                        printf("middle:sprd verify error:%d\n",r);
+                        free(s_buffer);
+                        return r;
+                }
+                debug_print_hex(data_buffer,cnt);
+                if(data_buffer[SPRD_FRAME_TYPE_OFF] != BSL_REP_ACK){
+                        printf("sprd ack error\n");
+                        free(s_buffer);
+                        return -1;
+                }
+
+		offset += r_size;
+		down_size -= r_size;
+
+		if(down_size_percent !=  ((unsigned long)offset*100/down_size_count)){
+			down_size_percent = (unsigned long)offset*100/down_size_count;
+			printf("\rdowload percent:%%%d",down_size_percent);
+			fflush(stdout);
+			if(down_size_percent == 100) putchar('\n');
+		}
+	}
+
+	free(s_buffer);
+	if(close(fd) != 0){
+		printf("close file error\n");
+		return -1;
+	}
+	/* end */
+#ifdef SPRD_DEBUG
+	printf("sprd download partition step:end\n");
+#endif
+        r = sprd_com_nodata(BSL_CMD_END_DATA);
+        if(r) {
+		printf("end step:sprd com nodata error:%d\n",r);
+		return r;
+	}
+        r = sprd_usb_receive(data_buffer,&cnt);
+        if(r) {
+		printf("end step:sprd usb receive error:%d\n",r);
+		return r;
+	}
+        r = sprd_verify_frame(data_buffer,cnt);
+        if(r) {
+		printf("end step:frame verify error:%d\n",r);
+                return r;
+        }
+        debug_print_hex(data_buffer,cnt);
+        if(data_buffer[SPRD_FRAME_TYPE_OFF] != BSL_REP_ACK){
+		printf("end step:ack error\n");
+                return -1;
+        }
+                
+        return 0;
+}
+
 /* read partition to file 
 *part_name - partition name
 *up_size - size of read
@@ -632,7 +835,7 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 	               return -1;
         }
 	uint32_t up_size_count = up_size;
-	uint32_t up_size_percent = 100;/* if up_size_percent = 0,0% may not display Immediately */
+	uint32_t up_size_percent = 255;/* if up_size_percent = 0,0% may not display Immediately */
 	uint32_t offset = 0;
 	uint32_t s_size = 0;
 	while(up_size){
@@ -730,6 +933,8 @@ int sprd_upload(char* part_name,uint32_t up_size,uint32_t win_size,char *file_na
 int sprd_task_bootrom(void)
 {
 	int r;
+        char fdl_path[1024];
+        ssize_t s;
 
 	/* sprd version */
 	r = sprd_version();
@@ -748,9 +953,21 @@ int sprd_task_bootrom(void)
 		printf("sprd_connect success\n");
 	}
 	
+	/* get fdl path */
+        s = readlink("/proc/self/exe",fdl_path,sizeof(fdl_path));
+        if(s > sizeof(fdl_path)){
+                printf("error:fdl1.bin path too long\n");
+                return -1;
+        }
+        for(;fdl_path[s-1] != '/';s--);
+        fdl_path[s] = '\0';
+        strcat(fdl_path,"fdl1.bin");
+#ifdef SPRD_DEBUG
+        printf("%s\n",fdl_path);
+#endif
 	/* sprd send fdl1 */
-	printf("fdl1.bin file size is %d\n",(int)get_file_size("fdl1.bin"));	
-	r = sprd_download("fdl1.bin",get_file_size("fdl1.bin"),0x50000000,528);
+	printf("fdl1.bin file size is %d\n",(int)get_file_size(fdl_path));	
+	r = sprd_download(fdl_path,get_file_size(fdl_path),0x50000000,528);
 	if(r != 0){
 		printf("sprd_download fdl1.bin error\n");
 		return r;
@@ -774,6 +991,8 @@ int sprd_task_fdl1(void)
 {
         int r;int i = 0;
 	int cnt;
+        char fdl_path[1024];
+        ssize_t s;
         /* sprd version */
 	for(i = 0;i < 2;i++){
         	if(sprd_version())
@@ -793,9 +1012,21 @@ int sprd_task_fdl1(void)
                 printf("sprd_connect success\n");
         }
 
+	/* get fdl path */
+        s = readlink("/proc/self/exe",fdl_path,sizeof(fdl_path));
+        if(s > sizeof(fdl_path)){
+                printf("error:fdl2.bin path too long\n");
+                return -1;
+        }
+        for(;fdl_path[s-1] != '/';s--);
+        fdl_path[s] = '\0';
+        strcat(fdl_path,"fdl2.bin");
+#ifdef SPRD_DEBUG
+        printf("%s\n",fdl_path);
+#endif
         /* sprd send fdl2 */
-        printf("fdl2.bin file size is %d\n",(int)get_file_size("fdl2.bin"));
-        r = sprd_download("fdl2.bin",get_file_size("fdl2.bin"),0x9f000000,2112);
+        printf("fdl2.bin file size is %d\n",(int)get_file_size(fdl_path));
+        r = sprd_download(fdl_path,get_file_size(fdl_path),0x9f000000,2112);
         if(r != 0){
                 printf("sprd_download fdl2.bin error\n");
                 return r;
@@ -844,7 +1075,7 @@ int sprd_read_camera(void)
 
     void * buff_p = malloc(win_size*2); //12k;
     if(buff_p == NULL){
-	printf("sprd_read_camera");
+	printf("sprd_read_camera:malloc error\n");
 	return -1;
     }
 
@@ -881,7 +1112,7 @@ int sprd_read_camera(void)
 		return -1;
 	}	
 	/* init percent task */
-	up_size_percent = 100;
+	up_size_percent = 255;
 	total_read_size = 0;
 	file_size = f_size(&Fil);
 	/* task */
@@ -900,16 +1131,21 @@ int sprd_read_camera(void)
 		total_read_size += r_size;
                 if(up_size_percent !=  ((unsigned long)total_read_size*100/file_size)){
                         up_size_percent = (unsigned long)total_read_size*100/file_size;
-                        printf("\r(%dK):%%%d",file_size/1024,up_size_percent);
+                        printf("\r(%d Bytes):%%%d",file_size,up_size_percent);
                         fflush(stdout);
                         if(up_size_percent == 100) putchar('\n');
                 }
-		/* read next image file */			
+		/* read next data */			
 		fr = f_read(&Fil,buff_p,win_size,&r_size);
 	}
 	if(fr != FR_OK){
 		printf("sprd_read_camera:f_read error:%d\n",fr);
 		return fr;
+	}
+	/* file is empty */
+	if(!file_size){
+		printf("\r(%d Bytes):%%%d",file_size,100);
+		putchar('\n');
 	}
 	
 	f_close(&Fil);
@@ -938,6 +1174,237 @@ int sprd_read_camera(void)
     return 0;
 }
 
+int sprd_ls_ext4fs(char *path)
+{
+	int r;
+	char *path_redirect = path;
+	/* partition detect */
+	if(strncmp(path,"/data",5) == 0){
+		bd = ext4_datadev_get();
+		if(strlen(path) == 5){//root
+			path_redirect = "/";
+		}	
+		else	path_redirect = path + 5;
+	}
+	else {
+		bd = ext4_syberfsdev_get();
+		path_redirect = path;
+	}
+
+        if (!bd) {
+                printf("sprd_ls_ext4fs:ext4_syberfsdev_get: no block device\n");
+                return false;
+        }
+        if (!test_lwext4_mount(bd, bc)){
+		printf("sprd_ls_ext4fs:test_lwext4_mount:error\n");
+                return -1;
+	}
+
+	printf("ls %s\n", path);
+        test_lwext4_dir_ls(path_redirect);
+        fflush(stdout);
+
+        if (!test_lwext4_umount()){
+		printf("sprd_ls_ext4fs:test_lwext4_umount:error\n");
+                return EXIT_FAILURE;
+	}
+
+        return 0;	
+}
+
+int sprd_read_ext4fs(char *path)
+{
+	int i;int r;int fr;
+        char *path_redirect = path;
+	char *path_dest = path;
+
+	ext4_file Fil;
+	int fd;
+
+    	size_t r_size = 0;
+    	size_t win_size = 0x3000;
+
+	uint32_t up_size_percent;
+    	uint32_t total_read_size;
+    	uint32_t file_size;
+
+    	void * buff_p = malloc(win_size*2); //12k;
+    	if(buff_p == NULL){
+        	printf("sprd_read_ext4fs:malloc error\n");
+        	return -1;
+    	}
+        /* partition detect */
+        if(strncmp(path,"/data",5) == 0){
+                bd = ext4_datadev_get();
+                if(strlen(path) == 5){//root
+                        path_redirect = "/";
+                }
+                else    path_redirect = path + 5;
+        }
+        else {
+                bd = ext4_syberfsdev_get();
+                path_redirect = path;
+        }
+
+        if (!bd) {
+                printf("sprd_read_ext4fs:ext4_syberfsdev_get: no block device\n");
+                return false;
+        }
+        if (!test_lwext4_mount(bd, bc)){
+                printf("sprd_read_ext4fs:test_lwext4_mount:error\n");
+                return -1;
+        }
+
+	/* prase pathname */
+	path_dest = path_redirect;
+	for(i = 0;i < strlen(path_redirect);i++){
+		if(path_redirect[i] == '/'){
+			path_dest = path_redirect + i + 1;
+		}
+	}
+	if(path_dest[0] == '\0'){
+		printf("File name Format error\n");		
+		return -1;
+	}
+        printf("get %s ---> %s\n",path ,path_dest);
+	fflush(stdout);
+	
+	/* get file task */
+	r = ext4_fopen(&Fil, path_redirect, "rb");
+	if(r != 0){
+		printf("ext4_open:error:%d\n",r);
+		return r;
+	}
+        umask(0);
+        fd = open(path_dest,O_CREAT|O_WRONLY|O_TRUNC,00666);
+        if(fd == -1){
+                printf("sprd_read_ext4fs:open or create %s error\n",path_dest);
+                return -1;
+        }
+
+        /* init percent task */
+        up_size_percent = 255;
+        total_read_size = 0;
+        file_size = ext4_fsize(&Fil);
+        /* task */
+        fr = ext4_fread(&Fil,buff_p,win_size,&r_size);
+        while(fr == EOK && r_size){
+                r = write(fd,buff_p,r_size);
+                if(r == -1){
+                        printf("sprd_read_ext4fs:write to %s error\n",path_dest);
+                        return r;
+                }
+                if(r != r_size){
+                        printf("sprd_read_ext4fs:write %x bytes,not complete\n",r);
+                        return r;
+                }
+                /* percent display */
+                total_read_size += r_size;
+                if(up_size_percent !=  ((unsigned long)total_read_size*100/file_size)){
+                        up_size_percent = (unsigned long)total_read_size*100/file_size;
+                        printf("\r(%d Bytes):%%%d",file_size,up_size_percent);
+                        fflush(stdout);
+                        if(up_size_percent == 100) putchar('\n');
+                }
+                /* read next data */ 
+                fr = ext4_fread(&Fil,buff_p,win_size,&r_size);
+        }
+        if(fr != EOK){
+                printf("sprd_read_ext4fs:ext4_fread error:%d\n",fr);
+                return fr;
+        }
+	/* file is empty */
+	if(!file_size){
+		printf("\r(%d Bytes):%%%d",file_size,100);
+		putchar('\n');
+	}
+
+	free(buff_p);
+	ext4_fclose(&Fil);
+	close(fd);
+
+        if (!test_lwext4_umount()){
+                printf("sprd_read_ext4fs:test_lwext4_umount:error\n");
+                return EXIT_FAILURE;
+        }
+
+	return 0;
+}
+
+
+int sprd_cat_ext4fs(char *path)
+{
+	int i;int r;int fr;
+        char *path_redirect = path;
+
+	ext4_file Fil;
+
+    	size_t r_size = 0;
+    	size_t win_size = 0x3000;
+
+    	void * buff_p = malloc(win_size*2); //12k;
+    	if(buff_p == NULL){
+        	printf("sprd_cat_ext4fs:malloc error\n");
+        	return -1;
+    	}
+        /* partition detect */
+        if(strncmp(path,"/data",5) == 0){
+                bd = ext4_datadev_get();
+                if(strlen(path) == 5){//root
+                        path_redirect = "/";
+                }
+                else    path_redirect = path + 5;
+        }
+        else {
+                bd = ext4_syberfsdev_get();
+                path_redirect = path;
+        }
+
+        if (!bd) {
+                printf("sprd_cat_ext4fs:ext4_syberfsdev_get: no block device\n");
+                return false;
+        }
+        if (!test_lwext4_mount(bd, bc)){
+                printf("sprd_cat_ext4fs:test_lwext4_mount:error\n");
+                return -1;
+        }
+
+        printf("cat %s\n",path);
+	fflush(stdout);
+	
+	/* cat file task */
+	r = ext4_fopen(&Fil, path_redirect, "rb");
+	if(r != 0){
+		printf("ext4_open:error:%d\n",r);
+		return r;
+	}
+
+        fr = ext4_fread(&Fil,buff_p,win_size,&r_size);
+        while(fr == EOK && r_size){
+		/* display data */
+		for(i = 0;i < r_size;i++){
+			putchar(((char*)buff_p)[i]);
+		}
+                /* read next data */ 
+                fr = ext4_fread(&Fil,buff_p,win_size,&r_size);
+        }
+        if(fr != EOK){
+                printf("sprd_cat_ext4fs:ext4_fread error:%d\n",fr);
+                return fr;
+        }
+
+	free(buff_p);
+	ext4_fclose(&Fil);
+
+        if (!test_lwext4_umount()){
+                printf("sprd_cat_ext4fs:test_lwext4_umount:error\n");
+                return EXIT_FAILURE;
+        }
+
+	return 0;
+}
+
+
 int main(int argc,char **argv)
 {
 	ssize_t cnt;
@@ -945,9 +1412,11 @@ int main(int argc,char **argv)
 
 	/* help info */
 	if(argc == 2 && strcmp(argv[1],"help") == 0){
-		for(i = 0;usage[i][0] != '\0';i++){
-			printf("%s\n",usage[i]);
-		}		
+		puts(usage);		
+		return 0;
+	}
+	if(argc == 2 && strcmp(argv[1],"version") == 0){
+		puts(SYBER_USB_VERSION);
 		return 0;
 	}
 
@@ -973,20 +1442,20 @@ int main(int argc,char **argv)
 		printf("sprd_dev is null(not find the device)\n");					
 		libusb_free_device_list(devs,1);
 		libusb_exit(NULL);
-		return ;
+		return -1;
 	}
 		
 	/* print descriptor */
 	r = print_descriptor(sprd_dev);
 	if( r != 0)
-		return;
+		return -1;
 	/* open & operate */
 	r = libusb_open(sprd_dev,&sprd_handle);
 	if(r != 0){
 		printf("open sprd_dev error(please run as root):%d\n",r);	
 		libusb_free_device_list(devs,1);
 		libusb_exit(NULL);
-		return ;
+		return -1;
 	}
 	r = libusb_claim_interface(sprd_handle,SPRD_INTERFACE);//interface 0
 	if(r != 0){
@@ -1078,6 +1547,24 @@ int main(int argc,char **argv)
 			goto error_release;
 		}		
 	}
+        else if(strcmp(argv[1],"write") == 0 && argc == 4){
+                //read task:check argv[?],read partition        
+                checksum_type = TYPE_IPSUM;
+                for(i = 0;part_table[i][0] != '\0';i++){
+                        if(strcmp(argv[2],part_table[i]) == 0)
+                                break;
+                        else continue;
+                }
+                if(part_table[i][0] == '\0'){
+                        printf("partition name %s error\n",argv[2]);
+                        goto error_release;
+                }
+                r = sprd_download_partition(argv[2],argv[3],get_file_size(argv[3]),0x5000);//20K
+                if(r != 0){
+                        printf("sprd_download partition error:%d\n",r);
+                        goto error_release;
+                }
+        }	
 	else if(strcmp(argv[1],"camera") == 0 && argc == 2){
 		printf("start get camera files\n");
 		checksum_type = TYPE_IPSUM;
@@ -1086,6 +1573,35 @@ int main(int argc,char **argv)
 		if(r != 0){
 			printf("sprd_read_camera error:%d\n",r);
 			goto error_release;
+		}
+	}
+	else if(strcmp(argv[1],"ext4fs") == 0 && argc >=4){
+		checksum_type = TYPE_IPSUM;
+		//r = test_lwext4fs(0);
+		if(strcmp(argv[2],"ls")==0){	
+			r = sprd_ls_ext4fs(argv[3]);
+			if(r != 0){
+				printf("sprd_ls_ext4fs error:%d\n",r);
+				goto error_release;
+			}
+		}
+		else if(strcmp(argv[2],"get")==0){
+			r = sprd_read_ext4fs(argv[3]);
+                        if(r != 0){
+                                printf("sprd_read_ext4fs error:%d\n",r);
+                                goto error_release;
+                        }			
+		}
+		else if(strcmp(argv[2],"cat")==0){
+			r = sprd_cat_ext4fs(argv[3]);
+                        if(r != 0){
+                                printf("sprd_cat_ext4fs error:%d\n",r);
+                                goto error_release;
+                        }			
+		}
+		else{
+			printf("param not correct\n");
+			goto error_release;					
 		}
 	}
 	else{

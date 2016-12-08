@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include "main.h"
 #include "protocol.h"
+#include "checksum.h"
 #include "stdlib.h"
 #include "ff.h"
 
