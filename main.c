@@ -564,6 +564,29 @@ int sprd_download(const char *file_name,uint32_t download_size,uint32_t dst_addr
 	return 0;
 }
 
+/* get sum of file */
+uint32_t get_sum_file(const char* pathname)
+{
+        int fd;int i;
+        ssize_t r_size =0;
+        uint32_t buff_size = 0x2800;
+        uint32_t check_sum = 0;
+        uint32_t  total_size = 0;
+        void *buff = malloc(buff_size);//10k
+        fd = open(pathname,O_RDONLY);
+        r_size = read(fd,buff,buff_size);
+        while(r_size){
+                for(i = 0;i < r_size;i++){
+                        check_sum += ((uint8_t*)buff)[i];
+                }
+                total_size += r_size;
+                r_size = read(fd,buff,buff_size);
+        }
+        free(buff);
+        close(fd);
+        return check_sum;
+}
+
 /* write file to partition 
 *part_name - partition name
 *down_size - size of write
@@ -577,7 +600,7 @@ int sprd_download_partition(char* part_name,const char* file_name,uint32_t down_
 			
 	int i;int r;int cnt;
 	uint16_t crc;
-	uint8_t com_buffer[84];
+	uint8_t com_buffer[100];
 	char *s_buffer = malloc(win_size*2);
 	/* check param */
 	if(!down_size){
@@ -604,25 +627,47 @@ int sprd_download_partition(char* part_name,const char* file_name,uint32_t down_
 #ifdef SPRD_DEBUG
 	printf("sprd download partition step:start\n");
 #endif
-	memset(com_buffer,0x00,84);
-        com_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
-        com_buffer[1] = 0x00;
-        com_buffer[SPRD_FRAME_TYPE_OFF] = BSL_CMD_START_DATA;
-        com_buffer[SPRD_FRAME_DATA_SIZE_OFF] = 0x4c>>8;
-        com_buffer[SPRD_FRAME_DATA_SIZE_OFF+1] = 0x4c;
-	com_buffer[84-1] = SPRD_END_BYTE;
-	for(i = 0;part_name[i] != '\0';i++){
-		com_buffer[SPRD_FRAME_DATA_OFF+i*2] = part_name[i];
-		com_buffer[SPRD_FRAME_DATA_OFF+i*2+1] = 0x00;
+	if(strcmp(part_name,"l_fixnv1") == 0){//writing l_fixnv1 is diff
+                memset(com_buffer,0x00,88);
+                com_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
+                com_buffer[1] = 0x00;
+                com_buffer[SPRD_FRAME_TYPE_OFF] = BSL_CMD_START_DATA;
+                com_buffer[SPRD_FRAME_DATA_SIZE_OFF] = 0x50>>8;
+                com_buffer[SPRD_FRAME_DATA_SIZE_OFF+1] = 0x50;
+                com_buffer[88-1] = SPRD_END_BYTE;
+                for(i = 0;part_name[i] != '\0';i++){
+                        com_buffer[SPRD_FRAME_DATA_OFF+i*2] = part_name[i];
+                        com_buffer[SPRD_FRAME_DATA_OFF+i*2+1] = 0x00;
+                }
+                *((uint32_t*)(com_buffer+77)) = down_size; //download size
+		*((uint32_t*)(com_buffer+81)) = get_sum_file(file_name); //total data sum
+                crc = checksum(checksum_type,com_buffer+1,88-4);
+                com_buffer[88-3] = crc>>8;
+                com_buffer[88-2] = crc;
+        
+                cnt = sprd_frame_exchange(s_buffer,com_buffer,88,0);
+                debug_print_hex(s_buffer,cnt);
 	}
-	*((uint32_t*)(com_buffer+77)) = down_size; //download size
-	crc = checksum(checksum_type,com_buffer+1,84-4);
-	com_buffer[84-3] = crc>>8;
-	com_buffer[84-2] = crc;
+	else{	
+		memset(com_buffer,0x00,84);
+	        com_buffer[SPRD_FRAME_START_OFF] = SPRD_START_BYTE;
+        	com_buffer[1] = 0x00;
+	        com_buffer[SPRD_FRAME_TYPE_OFF] = BSL_CMD_START_DATA;
+	        com_buffer[SPRD_FRAME_DATA_SIZE_OFF] = 0x4c>>8;
+	        com_buffer[SPRD_FRAME_DATA_SIZE_OFF+1] = 0x4c;
+		com_buffer[84-1] = SPRD_END_BYTE;
+		for(i = 0;part_name[i] != '\0';i++){
+			com_buffer[SPRD_FRAME_DATA_OFF+i*2] = part_name[i];
+			com_buffer[SPRD_FRAME_DATA_OFF+i*2+1] = 0x00;
+		}
+		*((uint32_t*)(com_buffer+77)) = down_size; //download size
+		crc = checksum(checksum_type,com_buffer+1,84-4);
+		com_buffer[84-3] = crc>>8;
+		com_buffer[84-2] = crc;
 	
-	cnt = sprd_frame_exchange(s_buffer,com_buffer,84,0);
-	debug_print_hex(s_buffer,cnt);
-
+		cnt = sprd_frame_exchange(s_buffer,com_buffer,84,0);
+		debug_print_hex(s_buffer,cnt);
+	}
 	r = sprd_usb_transfer(s_buffer,cnt);
 	if(r != 0){
 		printf("start:sprd usb transfer error:%d\n",r);

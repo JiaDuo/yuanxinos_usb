@@ -37,5 +37,6 @@ int sprd_usb_receive(uint8_t* data,int *size);
 int sprd_verify_frame(uint8_t* frame,int frame_size);
 int sprd_com_nodata(uint8_t bsl_com_byte);
 int sprd_frame_exchange(char *dst, const char *src, int src_size, int dir);
+uint32_t get_sum_file(const char* pathname);
 
 #endif
